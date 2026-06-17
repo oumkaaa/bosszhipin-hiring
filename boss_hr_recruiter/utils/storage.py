@@ -41,17 +41,20 @@ class CandidateStorage:
         to_status: str,
         **fields
     ) -> None:
-        """对单个候选人进行状态转移.
+        """State transition for single candidate.
 
         Args:
-            candidate: 候选人数据
-            to_status: 目标状态
-            **fields: 额外字段（如exclude_reason等）
+            candidate: Candidate data dict
+            to_status: Target status
+            **fields: Extra fields (e.g. exclude_reason)
         """
-        # 更新状态
+        # Get old status BEFORE updating
+        old_status = candidate.get('status', 'NEW')
+
+        # Update status
         candidate['status'] = to_status
 
-        # 更新last_action
+        # Map state transition to action
         action_map = {
             ('NEW', '首轮沟通'): 'first_message_sent',
             ('NEW', 'FAILED'): 'screened_failed',
@@ -67,18 +70,15 @@ class CandidateStorage:
             ('等待简历', 'FAILED'): 'resume_wait_failed',
         }
 
-        old_status = candidate.get('status')
-        # 获取之前的状态（注意：candidate['status']已经更新）
-        # 这里需要修复逻辑
         for (from_st, to_st), action in action_map.items():
             if old_status == from_st and to_status == to_st:
                 candidate['last_action'] = action
                 break
 
-        # 更新其他字段
+        # Update other fields
         candidate.update(fields)
 
-        # 如果是新增加的候选人，添加created_at
+        # Add timestamp if new candidate
         if 'created_at' not in candidate:
             candidate['created_at'] = datetime.now().isoformat()
 

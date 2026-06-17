@@ -1,43 +1,35 @@
 ---
 name: boss-hr-recruiter
-description: >
-  Boss直聘招聘助手（Python版）。完全基于boss-agent-cli，支持自动化招聘流程：
-  筛选+打招呼 → 判断回复 → 简历处理+目标判断。
-  定时触发模式：外部App每2小时触发一次skill，单次运行完成三个阶段。
-  解决了原opencli版本的GBK编码问题和Python集成困难。
-  
-metadata:
-  requires:
-    bins: ["python3", "boss-agent-cli"]
-  version: "1.0.0"
+description: Boss Zhipin Hiring Assistant - Technical preview. Automated recruiter workflows with dual-source candidate screening, reply judgment, and resume tracking. Python-native, based on boss-agent-cli API. Phases 2-3 currently simulate message sending; use dry-run mode for safe testing.
 ---
 
-# Boss直聘招聘助手（Python版）
+# Boss Zhipin Hiring Assistant
 
-## 一、架构说明
+**Status: Technical Preview** (see caveats below)
 
-**改造背景：** 从 boss-hiring-v2（基于 opencli TypeScript）迁移到 boss-hr-recruiter（完全 Python 实现，基于 boss-agent-cli）
+**Resolved:**
+- GBK encoding issues (native Python UTF-8)
+- Subprocess integration complexity (direct boss-agent-cli API)
+- Type safety and IDE support
 
-**核心优势：**
-- ✅ 编码问题彻底解决（GBK乱码问题消除）
-- ✅ Python原生，可直接 import 库
-- ✅ 性能更高（无subprocess开销）
-- ✅ 类型安全，IDE友好
-- ✅ 代码质量继承boss-agent-cli（1400+测试）
+**Current Limitations:**
+- Phase 1: Greeting simulation (DRY-RUN mode by default)
+- Phase 2-3: Reply/resume reading from local state files (not live API)
+- Use with `--dry-run` for safe testing
 
-**运行模式：**
+**Execution model:**
 ```
-外部App触发（每2小时）
+External trigger (every 2 hours)
   ↓
-单次运行（一个Python进程）
-  ├─ Phase 1：筛选 + 打招呼
-  ├─ Phase 2：判断回复是否达标
-  └─ Phase 3：简历处理 + 目标判断
+Single run (one Python process)
+  ├─ Phase 1: Screen + greet (dual sources)
+  ├─ Phase 2: Judge replies (simulated)
+  └─ Phase 3: Resume tracking (simulated)
   ↓
-退出，等待下次触发
+Exit, wait for next trigger
 ```
 
-三个阶段共享同一份 `candidates.json` 状态文件，阶段间以 JSON 格式通信。
+All phases share one `candidates.json` state file.
 
 ---
 

@@ -104,18 +104,18 @@ async def fetch_recommend_candidates(
                 candidate = {
                     'encryptGeekId': geek_card.get('encryptGeekId', ''),
                     'name': geek_card.get('name', ''),
-                    'geekCard': geek_card,  # 保留完整的 geekCard，用于后续简历解析
+                    'activeDesc': geek_card.get('activeDesc', ''),  # For sorting/filtering
+                    'geekCard': geek_card,  # Full geekCard for resume parsing
                     'source': 'recommend'
                 }
                 recommend_candidates.append(candidate)
 
-            # 检查是否有更多页
             has_more = (result.get('zpData') or {}).get('hasMore', False)
             if not has_more:
-                logger_obj.info(f"第 {page} 页已是最后一页")
+                logger_obj.info(f"Page {page} is last page")
                 break
 
-        logger_obj.info(f"推荐牛人列表：{len(recommend_candidates)} 人（共 {page} 页）")
+        logger_obj.info(f"Recommend candidates: {len(recommend_candidates)} (pages: {page})")
         return recommend_candidates
 
     except Exception as e:

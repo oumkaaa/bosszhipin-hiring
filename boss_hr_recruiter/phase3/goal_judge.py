@@ -1,7 +1,7 @@
 """Goal judgment for Phase 3."""
 
 import json
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List
 
@@ -55,15 +55,22 @@ def judge_goal_completion(runtime_dir: str) -> Dict[str, Any]:
             new_status = 'completed'
             reason = f'简历数达标（{resume_count}/{resume_target}）'
         else:
-            # 检查是否超时
+            # Check if deadline passed (handle aware/naive datetime properly)
             if task_deadline:
                 try:
                     deadline_dt = datetime.fromisoformat(task_deadline)
-                    if datetime.now() > deadline_dt:
+                    # Handle timezone-aware deadline vs naive now()
+                    if deadline_dt.tzinfo:
+                        now = datetime.now(deadline_dt.tzinfo)
+                    else:
+                        now = datetime.now()
+
+                    if now > deadline_dt:
                         is_expired = True
                         new_status = 'expired'
-                        reason = '任务已过期'
-                except Exception:
+                        reason = 'Deadline passed'
+                except Exception as e:
+                    # Log but don't fail - deadline check is optional
                     pass
 
     return {

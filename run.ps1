@@ -1,41 +1,42 @@
-# Boss直聘招聘助手 - Windows启动脚本
-# 用法: .\run.ps1 "D:\path\to\runtime_dir"
-
+#Requires -Version 5.1
+[CmdletBinding()]
 param(
     [string]$RuntimeDir = "D:\boss-hiring-runtime\default"
 )
 
-# 设置UTF-8编码（解决GBK问题）
-$env:PYTHONIOENCODING = 'utf-8'
+$ErrorActionPreference = "Stop"
+$env:PYTHONIOENCODING = "utf-8"
+$env:PYTHONUTF8 = "1"
 
-# 验证运行时目录
-if (-not (Test-Path $RuntimeDir)) {
-    Write-Host "✗ 运行时目录不存在: $RuntimeDir" -ForegroundColor Red
+try {
+    [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
+    $OutputEncoding = [Console]::OutputEncoding
+} catch {}
+
+if (-not (Test-Path -LiteralPath $RuntimeDir -PathType Container)) {
+    Write-Host "Runtime directory does not exist: $RuntimeDir" -ForegroundColor Red
     exit 1
 }
 
-Write-Host "=" * 60 -ForegroundColor Green
-Write-Host "Boss直聘招聘助手启动" -ForegroundColor Green
-Write-Host "=" * 60 -ForegroundColor Green
-Write-Host "运行时目录: $RuntimeDir" -ForegroundColor Yellow
-Write-Host ""
+Write-Host ("=" * 60) -ForegroundColor Green
+Write-Host "Boss Zhipin Hiring Assistant - Starting" -ForegroundColor Green
+Write-Host ("=" * 60) -ForegroundColor Green
+Write-Host "Runtime directory: $RuntimeDir" -ForegroundColor Yellow
 
-# 进入脚本所在目录
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommandPath
 Push-Location $ScriptDir
 
-# 运行主程序
-python -m boss_hr_recruiter.main "$RuntimeDir"
-
-$ExitCode = $LASTEXITCODE
-Pop-Location
+try {
+    python -m boss_hr_recruiter "$RuntimeDir"
+    $ExitCode = $LASTEXITCODE
+} finally {
+    Pop-Location
+}
 
 if ($ExitCode -eq 0) {
-    Write-Host ""
-    Write-Host "✓ 执行完成" -ForegroundColor Green
+    Write-Host "Completed successfully" -ForegroundColor Green
 } else {
-    Write-Host ""
-    Write-Host "✗ 执行失败 (退出码: $ExitCode)" -ForegroundColor Red
+    Write-Host "Failed with exit code: $ExitCode" -ForegroundColor Red
 }
 
 exit $ExitCode

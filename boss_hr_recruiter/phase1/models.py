@@ -1,7 +1,7 @@
 """Data models for Phase 1 screening."""
 
 from dataclasses import dataclass, field
-from typing import List, Optional
+from typing import List, Optional, Dict, Any
 
 
 @dataclass
@@ -51,7 +51,7 @@ class Candidate:
 
     @classmethod
     def from_dict(cls, data: dict) -> 'Candidate':
-        """从字典创建."""
+        """From dict creation."""
         return cls(
             friend_id=data.get('friend_id'),
             encrypt_geek_id=data.get('encrypt_geek_id'),
@@ -71,3 +71,39 @@ class Candidate:
             created_at=data.get('created_at'),
             first_message_sent_at=data.get('first_message_sent_at'),
         )
+
+
+def normalize_candidate(raw: Dict[str, Any]) -> Dict[str, Any]:
+    """Normalize candidate from API response to internal schema.
+
+    Handles field name variations (friendId vs friend_id, etc).
+
+    Args:
+        raw: Raw candidate dict from API
+
+    Returns:
+        Normalized candidate dict
+    """
+    # Determine primary ID
+    candidate_id = str(
+        raw.get("uid")
+        or raw.get("friendId")
+        or raw.get("friend_id")
+        or raw.get("encryptGeekId")
+        or raw.get("encrypt_geek_id")
+        or ""
+    )
+
+    return {
+        "candidate_id": candidate_id,
+        "uid": raw.get("uid", candidate_id),
+        "friend_id": raw.get("friendId") or raw.get("friend_id"),
+        "encrypt_geek_id": raw.get("encryptGeekId") or raw.get("encrypt_geek_id"),
+        "name": raw.get("name", ""),
+        "source": raw.get("source", "chat"),
+        "status": raw.get("status", "NEW"),
+        "screen_result": raw.get("screen_result", "UNCERTAIN"),
+        "score": raw.get("score", 0.0),
+        "geek_card": raw.get("geekCard"),
+        "exclude_reason": raw.get("exclude_reason", ""),
+    }
