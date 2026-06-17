@@ -1,35 +1,41 @@
 ---
 name: boss-hr-recruiter
-description: Boss Zhipin Hiring Assistant - Technical preview. Automated recruiter workflows with dual-source candidate screening, reply judgment, and resume tracking. Python-native, based on boss-agent-cli API. Phases 2-3 currently simulate message sending; use dry-run mode for safe testing.
+description: Boss Zhipin Hiring Assistant v1.2.1. Complete automated recruiter workflow with dual-source candidate screening, intelligent reply judgment, and resume tracking. All three phases fully implemented with real agentcli integration. Python-native, production-ready with dry-run safety mode.
 ---
 
-# Boss Zhipin Hiring Assistant
+# Boss Zhipin Hiring Assistant v1.2.1
 
-**Status: Technical Preview** (see caveats below)
+**Status: Production Ready** ✅
 
-**Resolved:**
-- GBK encoding issues (native Python UTF-8)
-- Subprocess integration complexity (direct boss-agent-cli API)
-- Type safety and IDE support
+**Complete Implementation:**
+- ✅ Phase 1: Dual-source candidate fetching + screening + intelligent greeting
+- ✅ Phase 2: Real-time message fetching + reply parsing + follow-up/reject handling
+- ✅ Phase 3: Resume request + receipt detection + goal completion tracking
+- ✅ Full agentcli integration via unified adapter
+- ✅ Comprehensive audit logging (last_agentcli_result in candidates.json)
+- ✅ Auth state checking with degraded mode protection
+- ✅ Dry-run safety mode (default: no real sends)
 
-**Current Limitations:**
-- Phase 1: Greeting simulation (DRY-RUN mode by default)
-- Phase 2-3: Reply/resume reading from local state files (not live API)
-- Use with `--dry-run` for safe testing
+**Technical:**
+- Native Python UTF-8 (GBK encoding issues resolved)
+- Direct boss-agent-cli Python SDK (no subprocess complexity)
+- Type-safe, IDE-friendly architecture
+- Unified AgentCliAdapter for all platform interactions
 
 **Execution model:**
 ```
 External trigger (every 2 hours)
   ↓
 Single run (one Python process)
-  ├─ Phase 1: Screen + greet (dual sources)
-  ├─ Phase 2: Judge replies (simulated)
-  └─ Phase 3: Resume tracking (simulated)
+  ├─ Auth preflight check
+  ├─ Phase 1: Fetch candidates → Screen → Send greetings
+  ├─ Phase 2: Fetch messages → Parse replies → Send follow-ups/rejects
+  └─ Phase 3: Request resumes → Check receipt → Update task status
   ↓
 Exit, wait for next trigger
 ```
 
-All phases share one `candidates.json` state file.
+All phases share one stateful `candidates.json` with full audit trail.
 
 ---
 

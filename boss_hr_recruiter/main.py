@@ -177,12 +177,16 @@ async def run_phase2(
 ) -> None:
     """Phase 2: Judge if candidate replies meet criteria.
 
+    Fetches latest messages from agentcli and parses for qualification.
+
     Args:
         logger: Logger instance
         auth: Auth manager
         config: Config dict
         storage: Candidate storage
     """
+    from .adapters import AgentCliAdapter
+
     logger.info("## Phase 2: Judging replies")
 
     task_status = config.get('task_status', 'active')
@@ -190,39 +194,134 @@ async def run_phase2(
         logger.info(f"Task status: {task_status} - skipping Phase 2")
         return
 
+    adapter = AgentCliAdapter(auth, logger)
     try:
-        logger.info("Checking candidate replies (simulated - reading local fields)...")
+        logger.info("Fetching latest messages from candidates...")
 
         candidates = storage.load()
         reply_checked = 0
         promoted_count = 0
+        follow_up_sent = 0
 
         for candidate in candidates:
-            if candidate.get('status') != '首轮沟通':
+            if candidate.get('status') not in ('首轮沟通', '首轮沟通追加提问'):
                 continue
 
-            uid = candidate.get('uid', '')
+            candidate_id = (
+                candidate.get('uid')
+                or candidate.get('friendId')
+                or candidate.get('friend_id')
+                or 'unknown'
+            )
             name = candidate.get('name', 'Unknown')
+            status = candidate.get('status', 'unknown')
 
             try:
-                logger.info(f"  Checking {name}...")
+                logger.info(f"  [{status}] {name}...")
 
-                reply = candidate.get('reply_content', '')
-                if not reply:
-                    logger.info(f"    - No reply yet")
+                # Fetch latest messages from agentcli
+                messages_result = adapter.get_latest_messages([int(candidate_id)])
+                messages = messages_result.get('zpData', {}).get('messages', [])
+
+                if not messages:
+                    logger.info(f"    - No new messages")
+                    candidate['last_message_checked_at'] = __import__('datetime').datetime.now().isoformat()
+                    candidate['last_agentcli_result'] = {
+                        'code': messages_result.get('code'),
+                        'action': 'get_latest_messages',
+                        'message_count': 0
+                    }
                     continue
 
+                # Extract reply text from latest message
+                latest_msg = messages[0] if messages else {}
+                reply = latest_msg.get('content', '')
+
+                if not reply:
+                    logger.info(f"    - Latest message empty")
+                    candidate['last_message_checked_at'] = __import__('datetime').datetime.now().isoformat()
+                    continue
+
+                # Parse reply
                 screen_rules = config.get('screen_rules', {})
                 parsed = parse_reply_text(reply, screen_rules)
+
+                # Store parsed result
+                candidate['parsed_reply'] = {
+                    'content': reply,
+                    'arrival_weeks': parsed.get('arrival_weeks'),
+                    'days_per_week': parsed.get('days_per_week'),
+                    'duration_months': parsed.get('duration_months'),
+                }
+                candidate['last_message_checked_at'] = __import__('datetime').datetime.now().isoformat()
+                candidate['last_agentcli_result'] = {
+                    'code': messages_result.get('code'),
+                    'action': 'get_latest_messages',
+                    'message_count': len(messages)
+                }
+
+                # Route by qualification
                 if parsed.get('qualified'):
-                    logger.info(f"    - Reply qualified - advancing")
+                    logger.info(f"    - Reply qualified - advancing to 二轮沟通")
                     candidate['status'] = '二轮沟通'
                     promoted_count += 1
+
                 elif parsed.get('needs_clarification'):
-                    logger.info(f"    - Incomplete - needs clarification")
-                    candidate['status'] = '首轮沟通追加提问'
+                    # Check if already asked for clarification
+                    times_asked = candidate.get('clarification_ask_count', 0)
+
+                    if times_asked == 0:
+                        logger.info(f"    - Incomplete - sending follow-up")
+                        # Send follow-up message
+                        follow_up_msg = config.get('follow_up_message', '')
+                        if follow_up_msg and not config.get('dry_run', False):
+                            send_result = adapter.send_message(
+                                int(candidate_id),
+                                follow_up_msg,
+                                dry_run=config.get('dry_run', False)
+                            )
+                            candidate['last_agentcli_result'] = {
+                                'code': send_result.get('code'),
+                                'action': 'send_message',
+                                'message_type': 'follow_up'
+                            }
+                            candidate['follow_up_sent_at'] = __import__('datetime').datetime.now().isoformat()
+                        candidate['status'] = '首轮沟通追加提问'
+                        candidate['clarification_ask_count'] = 1
+                        follow_up_sent += 1
+                    else:
+                        logger.info(f"    - Still incomplete after follow-up - rejecting")
+                        reject_msg = config.get('reject_message', '')
+                        if reject_msg and not config.get('dry_run', False):
+                            send_result = adapter.send_message(
+                                int(candidate_id),
+                                reject_msg,
+                                dry_run=config.get('dry_run', False)
+                            )
+                            candidate['last_agentcli_result'] = {
+                                'code': send_result.get('code'),
+                                'action': 'send_message',
+                                'message_type': 'reject'
+                            }
+                            candidate['reject_sent_at'] = __import__('datetime').datetime.now().isoformat()
+                        candidate['status'] = 'FAILED'
+                        candidate['exclude_reason'] = 'Reply incomplete after follow-up'
+
                 else:
-                    logger.info(f"    - Not qualified - rejected")
+                    logger.info(f"    - Not qualified - rejecting")
+                    reject_msg = config.get('reject_message', '')
+                    if reject_msg and not config.get('dry_run', False):
+                        send_result = adapter.send_message(
+                            int(candidate_id),
+                            reject_msg,
+                            dry_run=config.get('dry_run', False)
+                        )
+                        candidate['last_agentcli_result'] = {
+                            'code': send_result.get('code'),
+                            'action': 'send_message',
+                            'message_type': 'reject'
+                        }
+                        candidate['reject_sent_at'] = __import__('datetime').datetime.now().isoformat()
                     candidate['status'] = 'FAILED'
                     candidate['exclude_reason'] = parsed.get('reason', 'Reply not qualified')
 
@@ -230,10 +329,15 @@ async def run_phase2(
 
             except Exception as e:
                 logger.warning(f"    - Check failed: {e}")
+                candidate['last_agentcli_result'] = {
+                    'code': -1,
+                    'action': 'get_latest_messages',
+                    'error': str(e)
+                }
                 continue
 
         storage.save(candidates)
-        logger.info(f"Phase 2 done: checked {reply_checked}, advanced {promoted_count}")
+        logger.info(f"Phase 2 done: checked {reply_checked}, advanced {promoted_count}, follow-up sent {follow_up_sent}")
 
     except CookieExpiredError:
         logger.error("Cookie expired - stopping")
@@ -241,6 +345,8 @@ async def run_phase2(
     except Exception as e:
         logger.error(f"Phase 2 failed: {e}", exc_info=True)
         raise
+    finally:
+        adapter.close()
 
 
 async def run_phase3(
@@ -251,45 +357,142 @@ async def run_phase3(
 ) -> None:
     """Phase 3: Resume handling + goal completion check.
 
+    Requests resumes from 二轮沟通 candidates and checks for receipt.
+
     Args:
         logger: Logger instance
         auth: Auth manager
         config: Config dict
         storage: Candidate storage
     """
+    from .adapters import AgentCliAdapter
+
     logger.info("## Phase 3: Resume handling + goal check")
 
+    adapter = AgentCliAdapter(auth, logger)
     try:
-        logger.info("Processing candidates needing resumes (simulated)...")
+        logger.info("Processing candidates needing resumes...")
 
         candidates = storage.load()
         resume_requested = 0
         resume_received = 0
 
-        for candidate in candidates:
-            if candidate.get('status') != '二轮沟通':
-                continue
+        # Track which candidates are waiting for resume
+        waiting_candidates = [c for c in candidates if c.get('status') == '等待简历']
+        new_candidates = [c for c in candidates if c.get('status') == '二轮沟通']
 
-            uid = candidate.get('uid', '')
+        # Process new candidates: request resume
+        for candidate in new_candidates:
+            candidate_id = (
+                candidate.get('uid')
+                or candidate.get('friendId')
+                or candidate.get('friend_id')
+                or 'unknown'
+            )
             name = candidate.get('name', 'Unknown')
 
             try:
-                second_msg = config.get('second_round_message', '')
-                if second_msg:
-                    logger.info(f"  [DRY-RUN] Would request resume from {name}")
-                    resume_requested += 1
+                logger.info(f"  Requesting resume from {name}...")
 
-                logger.info(f"  Checking if {name} submitted resume...")
-                if candidate.get('reply_content', '').find('aid=38') > -1:
-                    logger.info(f"    - Resume received")
-                    candidate['status'] = '简历已获取'
-                    resume_received += 1
-                else:
-                    logger.info(f"    - No resume yet")
+                # First, send the second round message (if configured)
+                second_msg = config.get('second_round_message', '')
+                if second_msg and not config.get('dry_run', False):
+                    send_result = adapter.send_message(
+                        int(candidate_id),
+                        second_msg,
+                        dry_run=config.get('dry_run', False)
+                    )
+                    candidate['last_agentcli_result'] = {
+                        'code': send_result.get('code'),
+                        'action': 'send_message',
+                        'message_type': 'second_round'
+                    }
+
+                # Then request resume via exchange API
+                request_result = adapter.request_resume(
+                    int(candidate_id),
+                    dry_run=config.get('dry_run', False)
+                )
+
+                if request_result.get('code') == 0 or request_result.get('dry_run'):
+                    logger.info(f"    - Resume request sent")
                     candidate['status'] = '等待简历'
+                    candidate['resume_requested_at'] = __import__('datetime').datetime.now().isoformat()
+                    candidate['resume_request_result'] = {
+                        'code': request_result.get('code'),
+                        'action': 'exchange_request_by_friend'
+                    }
+                    resume_requested += 1
+                else:
+                    logger.warning(f"    - Resume request failed: {request_result.get('message')}")
+                    candidate['last_agentcli_result'] = {
+                        'code': request_result.get('code'),
+                        'action': 'exchange_request_by_friend',
+                        'error': request_result.get('message')
+                    }
 
             except Exception as e:
-                logger.warning(f"  Failed to process {name}: {e}")
+                logger.warning(f"  Failed to request resume from {name}: {e}")
+                candidate['last_agentcli_result'] = {
+                    'code': -1,
+                    'action': 'exchange_request_by_friend',
+                    'error': str(e)
+                }
+                continue
+
+        # Process waiting candidates: check for receipt
+        for candidate in waiting_candidates:
+            candidate_id = (
+                candidate.get('uid')
+                or candidate.get('friendId')
+                or candidate.get('friend_id')
+                or 'unknown'
+            )
+            name = candidate.get('name', 'Unknown')
+
+            try:
+                logger.info(f"  Checking if {name} submitted resume...")
+
+                # Fetch latest messages
+                messages_result = adapter.get_latest_messages([int(candidate_id)])
+                messages = messages_result.get('zpData', {}).get('messages', [])
+
+                if not messages:
+                    logger.info(f"    - No new messages")
+                    candidate['last_message_checked_at'] = __import__('datetime').datetime.now().isoformat()
+                    continue
+
+                # Check if any message contains resume (aid=38 indicates resume exchange)
+                resume_received_flag = False
+                for msg in messages:
+                    content = msg.get('content', '')
+                    if 'aid=38' in content or 'attachment' in content.lower():
+                        resume_received_flag = True
+                        break
+
+                if resume_received_flag:
+                    logger.info(f"    - Resume received")
+                    candidate['status'] = '简历已获取'
+                    candidate['resume_received_at'] = __import__('datetime').datetime.now().isoformat()
+                    resume_received += 1
+                else:
+                    logger.info(f"    - No resume yet, still waiting...")
+                    candidate['status'] = '等待简历'
+
+                candidate['last_message_checked_at'] = __import__('datetime').datetime.now().isoformat()
+                candidate['last_agentcli_result'] = {
+                    'code': messages_result.get('code'),
+                    'action': 'get_latest_messages',
+                    'message_count': len(messages)
+                }
+
+            except Exception as e:
+                logger.warning(f"  Failed to check resume for {name}: {e}")
+                candidate['last_agentcli_result'] = {
+                    'code': -1,
+                    'action': 'get_latest_messages',
+                    'error': str(e)
+                }
                 continue
 
         storage.save(candidates)
@@ -318,6 +521,8 @@ async def run_phase3(
     except Exception as e:
         logger.error(f"Phase 3 failed: {e}", exc_info=True)
         raise
+    finally:
+        adapter.close()
 
 
 async def main(runtime_dir: str, phase: int = None, dry_run: bool = False) -> None:
@@ -328,6 +533,8 @@ async def main(runtime_dir: str, phase: int = None, dry_run: bool = False) -> No
         phase: Specific phase to run (1/2/3, None for all)
         dry_run: Simulate without sending real messages
     """
+    from .adapters import AgentCliAdapter
+
     try:
         config = load_config(runtime_dir)
     except ConfigError as e:
@@ -350,6 +557,35 @@ async def main(runtime_dir: str, phase: int = None, dry_run: bool = False) -> No
     else:
         logger.info("Phases: all (1-3)")
     logger.info("=" * 60)
+
+    # Preflight auth check
+    logger.info("\nPreflight: Checking authentication...")
+    adapter = AgentCliAdapter(auth, logger)
+    try:
+        auth_result = adapter.check_auth_status()
+        auth_code = auth_result.get('code', -1)
+
+        if auth_code in (7, 37):
+            logger.critical("Auth failed: Cookie expired - please re-login")
+            logger.critical("Run: boss login --cdp")
+            sys.exit(2)
+
+        if auth_code != 0:
+            logger.critical(f"Auth check failed (code {auth_code}): {auth_result.get('message')}")
+            sys.exit(2)
+
+        logger.info("Auth OK - proceeding")
+
+        # Check send allowance
+        if not config.get('dry_run', False) and not config.get('allow_send', False):
+            logger.warning("WARNING: allow_send=false, running in dry-run mode")
+            config['dry_run'] = True
+
+    except Exception as e:
+        logger.critical(f"Preflight auth check failed: {e}")
+        sys.exit(2)
+    finally:
+        adapter.close()
 
     try:
         # 按需执行阶段
