@@ -16,7 +16,7 @@ python verify_setup.py
 python -m boss_hr_recruiter /path/to/runtime --dry-run
 
 # 真实运行（修改配置后）
-python -m boss_hr_recruiter /path/to/runtime
+python -m boss_hr_recruiter /path/to/runtime --live
 ```
 
 ## 核心功能
@@ -78,7 +78,7 @@ NEW → 首轮沟通 → 二轮沟通 → 等待简历 → 简历已获取
 
 ```bash
 # Cron
-0 */2 * * * python -m boss_hr_recruiter /path/to/runtime
+0 */2 * * * python -m boss_hr_recruiter /path/to/runtime --live
 
 # Windows Task Scheduler
 # 参考 SKILL.md

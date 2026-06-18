@@ -1,7 +1,8 @@
 #Requires -Version 5.1
 [CmdletBinding()]
 param(
-    [string]$RuntimeDir = "D:\boss-hiring-runtime\default"
+    [string]$RuntimeDir = "D:\boss-hiring-runtime\default",
+    [switch]$Live
 )
 
 $ErrorActionPreference = "Stop"
@@ -22,12 +23,22 @@ Write-Host ("=" * 60) -ForegroundColor Green
 Write-Host "Boss Zhipin Hiring Assistant - Starting" -ForegroundColor Green
 Write-Host ("=" * 60) -ForegroundColor Green
 Write-Host "Runtime directory: $RuntimeDir" -ForegroundColor Yellow
+if ($Live) {
+    Write-Host "Mode: LIVE" -ForegroundColor Yellow
+} else {
+    Write-Host "Mode: DRY-RUN" -ForegroundColor Yellow
+}
 
-$ScriptDir = Split-Path -Parent $MyInvocation.MyCommandPath
+$ScriptPath = if ($PSCommandPath) { $PSCommandPath } elseif ($MyInvocation.MyCommandPath) { $MyInvocation.MyCommandPath } else { $PWD.Path }
+$ScriptDir = Split-Path -Parent $ScriptPath
 Push-Location $ScriptDir
 
 try {
-    python -m boss_hr_recruiter "$RuntimeDir"
+    $ArgsList = @("-m", "boss_hr_recruiter", "$RuntimeDir")
+    if ($Live) {
+        $ArgsList += "--live"
+    }
+    python @ArgsList
     $ExitCode = $LASTEXITCODE
 } finally {
     Pop-Location

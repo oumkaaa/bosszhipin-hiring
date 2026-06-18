@@ -35,6 +35,15 @@ class CandidateStorage:
         except Exception as e:
             raise StorageError(f"保存候选人列表失败: {e}")
 
+    @staticmethod
+    def candidate_identity(candidate: Dict[str, Any]) -> str:
+        """Return a stable identity across chat and recommendation sources."""
+        for key in ("uid", "candidate_id", "friendId", "friend_id", "encryptGeekId", "encrypt_geek_id"):
+            value = candidate.get(key)
+            if value not in (None, ""):
+                return str(value)
+        return ""
+
     def transition(
         self,
         candidate: Dict[str, Any],
@@ -87,7 +96,8 @@ class CandidateStorage:
         candidates = self.load()
 
         # 检查是否已存在
-        if any(c['uid'] == candidate['uid'] for c in candidates):
+        candidate_id = self.candidate_identity(candidate)
+        if candidate_id and any(self.candidate_identity(c) == candidate_id for c in candidates):
             return
 
         # 添加创建时间和初始状态
@@ -103,7 +113,7 @@ class CandidateStorage:
         """获取单个候选人."""
         candidates = self.load()
         for c in candidates:
-            if c['uid'] == uid:
+            if self.candidate_identity(c) == str(uid):
                 return c
         return None
 
@@ -111,7 +121,7 @@ class CandidateStorage:
         """更新单个候选人信息."""
         candidates = self.load()
         for c in candidates:
-            if c['uid'] == uid:
+            if self.candidate_identity(c) == str(uid):
                 c.update(updates)
                 break
         self.save(candidates)

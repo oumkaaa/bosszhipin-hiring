@@ -4,6 +4,8 @@ Central interface for all platform interactions, handling auth checks,
 error logging, and result recording.
 """
 
+import json
+import subprocess
 from typing import Any, Dict, List, Optional
 from boss_agent_cli.auth.manager import AuthManager as BACAuthManager
 from boss_agent_cli.api.recruiter_client import BossRecruiterClient
@@ -106,7 +108,7 @@ class AgentCliAdapter:
             API response with resume data
         """
         try:
-            result = self.client.view_geek(geek_id, job_id)
+            result = self.client.view_geek(geek_id, job_id, security_id)
             self._check_result(result, "view_geek")
             return result
         except Exception as e:
@@ -130,7 +132,7 @@ class AgentCliAdapter:
         try:
             result = self.client.last_messages(friend_ids)
             self._check_result(result, "last_messages")
-            return result
+            return self._normalize_latest_messages_result(result)
         except Exception as e:
             self.logger.error(f"Failed to get messages: {e}")
             raise
@@ -208,23 +210,31 @@ class AgentCliAdapter:
             Status dict with auth state or error
         """
         try:
-            import subprocess
             result = subprocess.run(
-                ["boss", "status", "--live", "--json"],
+                ["boss", "--json", "status", "--live"],
                 capture_output=True,
                 text=True,
+                encoding="utf-8",
+                errors="replace",
                 timeout=10
             )
-            if result.returncode != 0:
+
+            payload = json.loads(result.stdout or "{}")
+            if payload.get("ok") is True:
                 return {
-                    "code": -1,
-                    "message": "boss status failed - may need re-login"
+                    "code": 0,
+                    **payload,
                 }
-            import json
-            return json.loads(result.stdout)
+
+            error = payload.get("error") or {}
+            return {
+                "code": error.get("code", -1),
+                "message": error.get("message", "boss status failed - may need re-login"),
+                **payload,
+            }
         except Exception as e:
-            self.logger.warning(f"Auth check failed: {e} - proceeding anyway")
-            return {"code": 0, "message": "auth check skipped"}
+            self.logger.error(f"Auth check failed: {e}")
+            return {"code": -1, "message": str(e)}
 
     # ===== Cleanup =====
 
@@ -257,3 +267,45 @@ class AgentCliAdapter:
             msg = result.get("message", "Unknown error")
             self.logger.error(f"{method} returned code {code}: {msg}")
             raise Exception(f"{method} failed: {msg}")
+
+    def _normalize_latest_messages_result(self, result: Dict[str, Any]) -> Dict[str, Any]:
+        """Expose last_messages responses in the shape the orchestration layer uses."""
+        zp_data = result.get("zpData")
+        if not isinstance(zp_data, dict):
+            return result
+
+        if isinstance(zp_data.get("messages"), list):
+            return result
+
+        messages = self._message_items(zp_data)
+        zp_data["messages"] = [
+            {
+                **item,
+                "content": self._message_text(item),
+            }
+            for item in messages
+        ]
+        return result
+
+    @staticmethod
+    def _message_items(data: Any) -> List[Dict[str, Any]]:
+        if isinstance(data, list):
+            return [item for item in data if isinstance(item, dict)]
+        if not isinstance(data, dict):
+            return []
+        for key in ("lastMessageList", "messages", "messageList", "result", "friendList", "list"):
+            value = data.get(key)
+            if isinstance(value, list):
+                return [item for item in value if isinstance(item, dict)]
+        return []
+
+    @staticmethod
+    def _message_text(item: Dict[str, Any]) -> str:
+        for key in ("content", "last_msg", "lastMsg", "text", "message", "msgContent"):
+            value = item.get(key)
+            if value not in (None, ""):
+                return str(value)
+        body = item.get("body")
+        if isinstance(body, dict) and body.get("text") not in (None, ""):
+            return str(body["text"])
+        return ""

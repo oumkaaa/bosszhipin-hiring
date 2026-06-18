@@ -329,7 +329,7 @@ NEW
 ### 11.1 命令行运行
 
 ```bash
-python -m boss_hr_recruiter.main /path/to/runtime_dir
+python -m boss_hr_recruiter /path/to/runtime_dir
 ```
 
 ### 11.2 定时触发
@@ -338,7 +338,7 @@ python -m boss_hr_recruiter.main /path/to/runtime_dir
 
 示例（cron）：
 ```bash
-0 */2 * * * python -m boss_hr_recruiter.main /path/to/runtime_dir
+0 */2 * * * python -m boss_hr_recruiter /path/to/runtime_dir --live
 ```
 
 ---
@@ -399,7 +399,7 @@ boss login --cdp
 
 ```bash
 # 将旧版本的runtime_dir直接用于新版本
-python -m boss_hr_recruiter.main /path/to/old_runtime_dir
+python -m boss_hr_recruiter /path/to/old_runtime_dir
 ```
 
 ---
@@ -418,7 +418,7 @@ mkdir -p D:/boss-hiring-runtime/ai-product-intern
 # 创建 run-context.json / screen-rules.json / candidates.json
 
 # 4. 首次运行
-python -m boss_hr_recruiter.main D:/boss-hiring-runtime/ai-product-intern
+python -m boss_hr_recruiter D:/boss-hiring-runtime/ai-product-intern --live
 
 # 5. 查看日志
 cat D:/boss-hiring-runtime/ai-product-intern/logs/main-20260617.log

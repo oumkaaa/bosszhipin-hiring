@@ -313,6 +313,7 @@ def screen_and_rate(
             friend_data = friends[0]
             geek_id = friend_data.get('encryptUid')  # 新招呼用 encryptUid
             job_id = friend_data.get('encryptJobId')  # 从返回数据中获取正确的加密 job_id
+            security_id = friend_data.get('securityId')
 
             if not geek_id or not job_id:
                 return {
@@ -326,7 +327,7 @@ def screen_and_rate(
 
             # 调用 view_geek 获取完整简历
             logger.debug(f"正在获取 {name} 的简历（geek_id={geek_id[:20]}...）")
-            resume_resp = client.view_geek(geek_id, job_id)
+            resume_resp = client.view_geek(geek_id, job_id, security_id)
 
             if resume_resp.get('code') != 0:
                 logger.warning(f"{name} 的简历获取失败: {resume_resp.get('message')}")

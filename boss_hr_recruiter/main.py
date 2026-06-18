@@ -17,6 +17,46 @@ from .utils import (
 from .phase1.screening import screen_and_rate
 from .phase2.reply_parser import parse_reply_text
 from .phase3.goal_judge import judge_goal_completion, update_task_status
+from .adapters import AgentCliAdapter
+
+
+class DryRunCandidateStorage:
+    """Read-through storage that suppresses writes during dry-run."""
+
+    def __init__(self, storage: CandidateStorage, logger: SkillLogger):
+        self.storage = storage
+        self.logger = logger
+
+    def load(self):
+        return self.storage.load()
+
+    def save(self, candidates):
+        self.logger.info(
+            "[DRY-RUN] Skipping candidates.json write (%s candidates)",
+            len(candidates)
+        )
+
+
+def candidate_identity(candidate: dict) -> str:
+    """Return a stable cross-source candidate identity for dedupe and logging."""
+    for key in ("uid", "candidate_id", "friendId", "friend_id", "encryptGeekId", "encrypt_geek_id"):
+        value = candidate.get(key)
+        if value not in (None, ""):
+            return str(value)
+    return ""
+
+
+def candidate_friend_id(candidate: dict):
+    """Return a numeric friend id when the candidate already has a chat session."""
+    for key in ("friendId", "friend_id", "uid"):
+        value = candidate.get(key)
+        if value in (None, ""):
+            continue
+        try:
+            return int(str(value))
+        except (TypeError, ValueError):
+            continue
+    return None
 
 
 async def run_phase1(
@@ -46,6 +86,9 @@ async def run_phase1(
     task_status = config.get('task_status', 'active')
     if task_status in ('completed', 'expired'):
         logger.info(f"Task status: {task_status} - skipping Phase 1")
+        return
+    if config.get('dry_run') and not config.get('platform_available', True):
+        logger.info("[DRY-RUN] Platform auth unavailable - skipping Phase 1 platform reads")
         return
 
     try:
@@ -93,14 +136,13 @@ async def run_phase1(
 
         # Create client for screening
         client = BossRecruiterClient(auth)
+        adapter = AgentCliAdapter(auth, logger)
         try:
             greet_count = 0
             for candidate in allocated:
                 try:
                     candidate_id = (
-                        candidate.get('uid')
-                        or candidate.get('friendId')
-                        or candidate.get('encryptGeekId')
+                        candidate_identity(candidate)
                         or 'unknown'
                     )
                     name = candidate.get('name', 'Unknown')
@@ -127,11 +169,18 @@ async def run_phase1(
                         # Send greeting via adapter
                         first_msg = config.get('first_round_message', '')
                         if first_msg:
-                            send_result = adapter.send_message(
-                                int(candidate_id),
-                                first_msg,
-                                dry_run=config.get('dry_run', False)
-                            )
+                            friend_id = candidate_friend_id(candidate)
+                            if friend_id is None:
+                                send_result = {
+                                    'code': -1,
+                                    'message': 'Candidate has no numeric friendId for chat send'
+                                }
+                            else:
+                                send_result = adapter.send_message(
+                                    friend_id,
+                                    first_msg,
+                                    dry_run=config.get('dry_run', False)
+                                )
 
                             if send_result.get('code') == 0 or send_result.get('dry_run'):
                                 logger.info(f"  [{source}] {name} - Greeting sent")
@@ -165,21 +214,24 @@ async def run_phase1(
                     continue
         finally:
             client.close()
+            adapter.close()
 
         # 保存更新：合并新候选人到现有列表
         if allocated:
             existing = storage.load()
-            # 按uid去重，新候选人优先
-            existing_uids = {c.get('uid') for c in existing}
+            existing_by_id = {
+                key: index
+                for index, c in enumerate(existing)
+                if (key := candidate_identity(c))
+            }
             for candidate in allocated:
-                if candidate.get('uid') not in existing_uids:
+                key = candidate_identity(candidate)
+                if not key or key not in existing_by_id:
                     existing.append(candidate)
+                    if key:
+                        existing_by_id[key] = len(existing) - 1
                 else:
-                    # 更新现有候选人
-                    for i, c in enumerate(existing):
-                        if c.get('uid') == candidate.get('uid'):
-                            existing[i] = candidate
-                            break
+                    existing[existing_by_id[key]] = candidate
             storage.save(existing)
 
         logger.info(f"Phase 1 done: greeted {greet_count} candidates")
@@ -208,13 +260,14 @@ async def run_phase2(
         config: Config dict
         storage: Candidate storage
     """
-    from .adapters import AgentCliAdapter
-
     logger.info("## Phase 2: Judging replies")
 
     task_status = config.get('task_status', 'active')
     if task_status in ('completed', 'expired'):
         logger.info(f"Task status: {task_status} - skipping Phase 2")
+        return
+    if config.get('dry_run') and not config.get('platform_available', True):
+        logger.info("[DRY-RUN] Platform auth unavailable - skipping Phase 2 message checks")
         return
 
     adapter = AgentCliAdapter(auth, logger)
@@ -230,20 +283,17 @@ async def run_phase2(
             if candidate.get('status') not in ('首轮沟通', '首轮沟通追加提问'):
                 continue
 
-            candidate_id = (
-                candidate.get('uid')
-                or candidate.get('friendId')
-                or candidate.get('friend_id')
-                or 'unknown'
-            )
+            candidate_id = candidate_friend_id(candidate)
             name = candidate.get('name', 'Unknown')
             status = candidate.get('status', 'unknown')
 
             try:
                 logger.info(f"  [{status}] {name}...")
+                if candidate_id is None:
+                    raise ValueError("Candidate has no numeric friendId for message lookup")
 
                 # Fetch latest messages from agentcli
-                messages_result = adapter.get_latest_messages([int(candidate_id)])
+                messages_result = adapter.get_latest_messages([candidate_id])
                 messages = messages_result.get('zpData', {}).get('messages', [])
 
                 if not messages:
@@ -297,9 +347,9 @@ async def run_phase2(
                         logger.info(f"    - Incomplete - sending follow-up")
                         # Send follow-up message
                         follow_up_msg = config.get('follow_up_message', '')
-                        if follow_up_msg and not config.get('dry_run', False):
+                        if follow_up_msg:
                             send_result = adapter.send_message(
-                                int(candidate_id),
+                                candidate_id,
                                 follow_up_msg,
                                 dry_run=config.get('dry_run', False)
                             )
@@ -315,9 +365,9 @@ async def run_phase2(
                     else:
                         logger.info(f"    - Still incomplete after follow-up - rejecting")
                         reject_msg = config.get('reject_message', '')
-                        if reject_msg and not config.get('dry_run', False):
+                        if reject_msg:
                             send_result = adapter.send_message(
-                                int(candidate_id),
+                                candidate_id,
                                 reject_msg,
                                 dry_run=config.get('dry_run', False)
                             )
@@ -333,9 +383,9 @@ async def run_phase2(
                 else:
                     logger.info(f"    - Not qualified - rejecting")
                     reject_msg = config.get('reject_message', '')
-                    if reject_msg and not config.get('dry_run', False):
+                    if reject_msg:
                         send_result = adapter.send_message(
-                            int(candidate_id),
+                            candidate_id,
                             reject_msg,
                             dry_run=config.get('dry_run', False)
                         )
@@ -388,9 +438,17 @@ async def run_phase3(
         config: Config dict
         storage: Candidate storage
     """
-    from .adapters import AgentCliAdapter
-
     logger.info("## Phase 3: Resume handling + goal check")
+
+    if config.get('dry_run') and not config.get('platform_available', True):
+        logger.info("[DRY-RUN] Platform auth unavailable - skipping Phase 3 platform actions")
+        logger.info("Checking goal completion...")
+        result = judge_goal_completion(config['runtime_dir'])
+        logger.info(f"Resume progress: {result['resume_count']}/{config.get('resume_target', 5)}")
+        logger.info(f"Task status: {result['task_status']}")
+        if result['is_completed'] or result['is_expired']:
+            logger.info(f"[DRY-RUN] Would update task status to: {result['task_status']}")
+        return
 
     adapter = AgentCliAdapter(auth, logger)
     try:
@@ -406,22 +464,19 @@ async def run_phase3(
 
         # Process new candidates: request resume
         for candidate in new_candidates:
-            candidate_id = (
-                candidate.get('uid')
-                or candidate.get('friendId')
-                or candidate.get('friend_id')
-                or 'unknown'
-            )
+            candidate_id = candidate_friend_id(candidate)
             name = candidate.get('name', 'Unknown')
 
             try:
                 logger.info(f"  Requesting resume from {name}...")
+                if candidate_id is None:
+                    raise ValueError("Candidate has no numeric friendId for resume request")
 
                 # First, send the second round message (if configured)
                 second_msg = config.get('second_round_message', '')
-                if second_msg and not config.get('dry_run', False):
+                if second_msg:
                     send_result = adapter.send_message(
-                        int(candidate_id),
+                        candidate_id,
                         second_msg,
                         dry_run=config.get('dry_run', False)
                     )
@@ -433,7 +488,7 @@ async def run_phase3(
 
                 # Then request resume via exchange API
                 request_result = adapter.request_resume(
-                    int(candidate_id),
+                    candidate_id,
                     dry_run=config.get('dry_run', False)
                 )
 
@@ -465,19 +520,16 @@ async def run_phase3(
 
         # Process waiting candidates: check for receipt
         for candidate in waiting_candidates:
-            candidate_id = (
-                candidate.get('uid')
-                or candidate.get('friendId')
-                or candidate.get('friend_id')
-                or 'unknown'
-            )
+            candidate_id = candidate_friend_id(candidate)
             name = candidate.get('name', 'Unknown')
 
             try:
                 logger.info(f"  Checking if {name} submitted resume...")
+                if candidate_id is None:
+                    raise ValueError("Candidate has no numeric friendId for message lookup")
 
                 # Fetch latest messages
-                messages_result = adapter.get_latest_messages([int(candidate_id)])
+                messages_result = adapter.get_latest_messages([candidate_id])
                 messages = messages_result.get('zpData', {}).get('messages', [])
 
                 if not messages:
@@ -528,7 +580,9 @@ async def run_phase3(
         logger.info(f"Resume progress: {resume_count}/{resume_target}")
         logger.info(f"Task status: {result['task_status']}")
 
-        if result['is_completed'] or result['is_expired']:
+        if (result['is_completed'] or result['is_expired']) and config.get('dry_run', False):
+            logger.info(f"[DRY-RUN] Would update task status to: {result['task_status']}")
+        elif result['is_completed'] or result['is_expired']:
             logger.info(f"Updating task status to: {result['task_status']}")
             update_task_status(
                 config['runtime_dir'],
@@ -556,8 +610,6 @@ async def main(runtime_dir: str, phase: int = None, dry_run: bool = False) -> No
         phase: Specific phase to run (1/2/3, None for all)
         dry_run: Simulate without sending real messages
     """
-    from .adapters import AgentCliAdapter
-
     try:
         config = load_config(runtime_dir)
     except ConfigError as e:
@@ -567,6 +619,8 @@ async def main(runtime_dir: str, phase: int = None, dry_run: bool = False) -> No
     config['dry_run'] = dry_run
     logger = SkillLogger(runtime_dir, "main")
     storage = CandidateStorage(runtime_dir)
+    if dry_run:
+        storage = DryRunCandidateStorage(storage, logger)
     auth = BACAuthManager(Path.home() / '.boss-agent')
 
     logger.info("=" * 60)
@@ -593,11 +647,19 @@ async def main(runtime_dir: str, phase: int = None, dry_run: bool = False) -> No
             logger.critical("Run: boss login --cdp")
             sys.exit(2)
 
-        if auth_code != 0:
+        if auth_code != 0 and config.get('dry_run', False):
+            config['platform_available'] = False
+            logger.warning(
+                "Auth check failed in dry-run mode (code %s): %s; continuing without sends",
+                auth_code,
+                auth_result.get('message')
+            )
+        elif auth_code != 0:
             logger.critical(f"Auth check failed (code {auth_code}): {auth_result.get('message')}")
             sys.exit(2)
-
-        logger.info("Auth OK - proceeding")
+        else:
+            config['platform_available'] = True
+            logger.info("Auth OK - proceeding")
 
         # Check send allowance
         if not config.get('dry_run', False) and not config.get('allow_send', False):
