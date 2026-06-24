@@ -228,6 +228,138 @@ def test_screening_passes_security_id_to_view_geek():
     assert client.view_args == ("geek", "job", "sec")
 
 
+def test_chat_list_candidates_accept_zpdata_result_and_preserve_identifiers():
+    from boss_hr_recruiter.phase1.sources import fetch_chat_list_candidates
+
+    class FakeClient:
+        def friend_list(self, page, label_id, job_id):
+            return {
+                "code": 0,
+                "zpData": {
+                    "result": [
+                        {
+                            "uid": 123,
+                            "name": "Alice",
+                            "encryptFriendId": "friend-enc",
+                            "encryptUid": "uid-enc",
+                            "encryptGeekId": "geek-enc",
+                            "encryptJobId": "job-enc",
+                            "securityId": "sec-id",
+                        },
+                    ],
+                },
+            }
+
+    candidates = asyncio.run(fetch_chat_list_candidates(FakeClient(), "job"))
+
+    assert len(candidates) == 1
+    assert candidates[0]["friendId"] == 123
+    assert candidates[0]["name"] == "Alice"
+    assert candidates[0]["source"] == "chat"
+    assert candidates[0]["encryptFriendId"] == "friend-enc"
+    assert candidates[0]["encryptUid"] == "uid-enc"
+    assert candidates[0]["encryptGeekId"] == "geek-enc"
+    assert candidates[0]["encryptJobId"] == "job-enc"
+    assert candidates[0]["securityId"] == "sec-id"
+
+
+def test_screening_uses_candidate_identifiers_before_friend_detail():
+    from boss_hr_recruiter.phase1.screening import screen_and_rate
+
+    class FakeClient:
+        def __init__(self):
+            self.friend_detail_called = False
+            self.view_args = None
+
+        def friend_detail(self, friend_ids):
+            self.friend_detail_called = True
+            raise AssertionError("friend_detail should not be called when candidate identifiers are present")
+
+        def view_geek(self, geek_id, job_id, security_id=None):
+            self.view_args = (geek_id, job_id, security_id)
+            return {
+                "code": 0,
+                "data": {
+                    "zpData": {
+                        "geekDetailInfo": {
+                            "geekBaseInfo": {"degreeCategory": "本科", "workYearDesc": "28年应届生"},
+                            "geekWorkExpList": [],
+                            "geekEduExpList": [{"schoolName": "Test University", "majorName": "AI产品", "tags": []}],
+                        },
+                    },
+                },
+            }
+
+    client = FakeClient()
+    result = screen_and_rate(
+        candidate={
+            "friendId": 123,
+            "name": "Alice",
+            "source": "chat",
+            "encryptGeekId": "geek-from-list",
+            "encryptJobId": "job-from-list",
+            "encryptFriendId": "friend-enc-not-security",
+            "securityId": "sec-from-list",
+        },
+        client=client,
+        config={},
+        rules={"valid_degrees": ["本科"], "min_grad_year": 2026},
+        logger=DummyLogger(),
+    )
+
+    assert result["screen_result"] == "PASS"
+    assert client.friend_detail_called is False
+    assert client.view_args == ("geek-from-list", "job-from-list", "sec-from-list")
+
+
+def test_screening_does_not_treat_encrypt_friend_id_as_security_id():
+    from boss_hr_recruiter.phase1.screening import screen_and_rate
+
+    class FakeClient:
+        def __init__(self):
+            self.view_args = None
+
+        def friend_detail(self, friend_ids):
+            return {
+                "code": 0,
+                "zpData": {
+                    "friendList": [{"encryptUid": "geek", "encryptJobId": "job"}],
+                },
+            }
+
+        def view_geek(self, geek_id, job_id, security_id=None):
+            self.view_args = (geek_id, job_id, security_id)
+            return {
+                "code": 0,
+                "data": {
+                    "zpData": {
+                        "geekDetailInfo": {
+                            "geekBaseInfo": {"degreeCategory": "本科", "workYearDesc": "28年应届生"},
+                            "geekWorkExpList": [],
+                            "geekEduExpList": [{"schoolName": "Test University", "majorName": "AI产品", "tags": []}],
+                        },
+                    },
+                },
+            }
+
+    client = FakeClient()
+    result = screen_and_rate(
+        candidate={
+            "friendId": 123,
+            "name": "Alice",
+            "source": "chat",
+            "encryptFriendId": "friend-enc-not-security",
+        },
+        client=client,
+        config={},
+        rules={"valid_degrees": ["本科"], "min_grad_year": 2026},
+        logger=DummyLogger(),
+    )
+
+    assert result["screen_result"] == "PASS"
+    assert client.view_args == ("geek", "job", None)
+
+
 def test_phase3_dry_run_does_not_update_task_status():
     main_mod = importlib.import_module("boss_hr_recruiter.main")
     called = {"update": False}
@@ -279,6 +411,9 @@ if __name__ == "__main__":
         test_phase2_dry_run_records_follow_up_send,
         test_adapter_normalizes_last_message_list_and_passes_security_id,
         test_screening_passes_security_id_to_view_geek,
+        test_chat_list_candidates_accept_zpdata_result_and_preserve_identifiers,
+        test_screening_uses_candidate_identifiers_before_friend_detail,
+        test_screening_does_not_treat_encrypt_friend_id_as_security_id,
         test_phase3_dry_run_does_not_update_task_status,
     ]
     failures = 0

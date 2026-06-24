@@ -39,7 +39,8 @@ async def fetch_chat_list_candidates(
             logger_obj.warning(f"friend_list 返回错误: {result.get('message', 'unknown error')}")
             return []
 
-        friends = (result.get('zpData') or {}).get('friendList') or []
+        zp_data = result.get('zpData') or {}
+        friends = zp_data.get('result') or zp_data.get('friendList') or []
         chat_candidates = []
 
         for friend in friends:
@@ -48,6 +49,19 @@ async def fetch_chat_list_candidates(
                 'name': friend.get('name', ''),
                 'source': 'chat'
             }
+            for key in (
+                'encryptFriendId',
+                'encryptUid',
+                'encryptGeekId',
+                'encryptJobId',
+                'encJobId',
+                'securityId',
+                'security_id',
+                'uid',
+                'friendSource',
+            ):
+                if friend.get(key) is not None:
+                    candidate[key] = friend.get(key)
             chat_candidates.append(candidate)
 
         logger_obj.info(f"新招呼列表：{len(chat_candidates)} 人")

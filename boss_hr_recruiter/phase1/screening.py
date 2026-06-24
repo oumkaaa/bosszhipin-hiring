@@ -240,6 +240,43 @@ def score_business_rules(
     return 75.0
 
 
+def _first_present(*values: Any) -> Any:
+    for value in values:
+        if value not in (None, ''):
+            return value
+    return None
+
+
+def _candidate_geek_id(candidate: Dict[str, Any], friend_data: Dict[str, Any]) -> Any:
+    return _first_present(
+        candidate.get('encryptGeekId'),
+        candidate.get('encryptUid'),
+        friend_data.get('encryptGeekId'),
+        friend_data.get('encryptUid'),
+        friend_data.get('encryptFriendId'),
+    )
+
+
+def _candidate_job_id(candidate: Dict[str, Any], friend_data: Dict[str, Any], config: Dict[str, Any]) -> Any:
+    return _first_present(
+        candidate.get('encryptJobId'),
+        candidate.get('encJobId'),
+        friend_data.get('encryptJobId'),
+        friend_data.get('encJobId'),
+        config.get('encrypt_job_id'),
+        config.get('encryptJobId'),
+    )
+
+
+def _candidate_security_id(candidate: Dict[str, Any], friend_data: Dict[str, Any]) -> Any:
+    return _first_present(
+        candidate.get('securityId'),
+        candidate.get('security_id'),
+        friend_data.get('securityId'),
+        friend_data.get('security_id'),
+    )
+
+
 def screen_and_rate(
     candidate: Dict[str, Any],
     client: Any,
@@ -274,7 +311,6 @@ def screen_and_rate(
     try:
         # 根据来源获取加密的 geek_id 和 job_id
         if source == 'chat':
-            # 新招呼：从 friend_detail 获取 encryptUid 和 encryptJobId
             friend_id = candidate.get('friendId')
             if not friend_id:
                 return {
@@ -283,61 +319,70 @@ def screen_and_rate(
                     'screen_result': 'UNCERTAIN',
                     'score': 0.0,
                     'resume_data': {},
-                    'exclude_reason': '缺少 friendId',
+                    'exclude_reason': 'missing friendId',
                 }
 
-            # 调用 friend_detail 获取加密 ID
-            friend_detail_resp = client.friend_detail([friend_id])
-            if friend_detail_resp.get('code') != 0:
-                logger.warning(f"{name} 的 friend_detail 调用失败: {friend_detail_resp.get('message')}")
-                return {
-                    'name': name,
-                    'source': source,
-                    'screen_result': 'UNCERTAIN',
-                    'score': 0.0,
-                    'resume_data': {},
-                    'exclude_reason': f"friend_detail 失败: {friend_detail_resp.get('message')}",
-                }
-
-            friends = friend_detail_resp.get('zpData', {}).get('friendList', [])
-            if not friends:
-                return {
-                    'name': name,
-                    'source': source,
-                    'screen_result': 'UNCERTAIN',
-                    'score': 0.0,
-                    'resume_data': {},
-                    'exclude_reason': 'friend_detail 未返回候选人信息',
-                }
-
-            friend_data = friends[0]
-            geek_id = friend_data.get('encryptUid')  # 新招呼用 encryptUid
-            job_id = friend_data.get('encryptJobId')  # 从返回数据中获取正确的加密 job_id
-            security_id = friend_data.get('securityId')
+            friend_data: Dict[str, Any] = {}
+            geek_id = _candidate_geek_id(candidate, friend_data)
+            job_id = _candidate_job_id(candidate, friend_data, config)
+            security_id = _candidate_security_id(candidate, friend_data)
 
             if not geek_id or not job_id:
+                friend_detail_resp = client.friend_detail([friend_id])
+                if friend_detail_resp.get('code') != 0:
+                    logger.warning(f"{name} friend_detail failed: {friend_detail_resp.get('message')}")
+                    return {
+                        'name': name,
+                        'source': source,
+                        'screen_result': 'UNCERTAIN',
+                        'score': 0.0,
+                        'resume_data': {},
+                        'exclude_reason': f"friend_detail failed: {friend_detail_resp.get('message')}",
+                    }
+
+                friends = friend_detail_resp.get('zpData', {}).get('friendList', [])
+                if not friends:
+                    return {
+                        'name': name,
+                        'source': source,
+                        'screen_result': 'UNCERTAIN',
+                        'score': 0.0,
+                        'resume_data': {},
+                        'exclude_reason': 'friend_detail returned no candidate data',
+                    }
+
+                friend_data = friends[0]
+                geek_id = _candidate_geek_id(candidate, friend_data)
+                job_id = _candidate_job_id(candidate, friend_data, config)
+                security_id = _candidate_security_id(candidate, friend_data)
+
+            if not geek_id or not job_id:
+                missing = []
+                if not geek_id:
+                    missing.append('encryptGeekId/encryptUid')
+                if not job_id:
+                    missing.append('encryptJobId/encJobId')
                 return {
                     'name': name,
                     'source': source,
                     'screen_result': 'UNCERTAIN',
                     'score': 0.0,
                     'resume_data': {},
-                    'exclude_reason': '缺少 encryptUid 或 encryptJobId',
+                    'exclude_reason': f"missing {', '.join(missing)}",
                 }
 
-            # 调用 view_geek 获取完整简历
-            logger.debug(f"正在获取 {name} 的简历（geek_id={geek_id[:20]}...）")
+            logger.debug(f"Fetching resume for {name} (geek_id={str(geek_id)[:20]}...)")
             resume_resp = client.view_geek(geek_id, job_id, security_id)
 
             if resume_resp.get('code') != 0:
-                logger.warning(f"{name} 的简历获取失败: {resume_resp.get('message')}")
+                logger.warning(f"{name} resume fetch failed: {resume_resp.get('message')}")
                 return {
                     'name': name,
                     'source': source,
                     'screen_result': 'UNCERTAIN',
                     'score': 0.0,
                     'resume_data': {},
-                    'exclude_reason': f"简历获取失败: {resume_resp.get('message')}",
+                    'exclude_reason': f"resume fetch failed: {resume_resp.get('message')}",
                 }
 
             resume_data = parse_resume_json(resume_resp)
